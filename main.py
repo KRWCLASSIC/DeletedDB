@@ -29,7 +29,7 @@ cache_db_path = os.path.join(db_folder, 'cache_db.sqlite')
 
 # Create the deleted_db.sqlite database and tables
 def setup_deleted_db():
-    conn = sqlite3.connect(deleted_db_path)
+    conn = sqlite3.connect(deleted_db_path, check_same_thread=False)
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -65,7 +65,7 @@ def setup_deleted_db():
 
 # Create the edited_db.sqlite database and tables
 def setup_edited_db():
-    conn = sqlite3.connect(edited_db_path)
+    conn = sqlite3.connect(edited_db_path, check_same_thread=False)
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -111,7 +111,7 @@ if not os.path.exists('.cache'):
 
 # Cache database setup
 def create_cache_table():
-    cache_conn = sqlite3.connect(cache_db_path)
+    cache_conn = sqlite3.connect(cache_db_path, check_same_thread=False)
     cache_cursor = cache_conn.cursor()
 
     cache_cursor.execute('''
@@ -142,36 +142,32 @@ def hash_attachment(content):
 executor = ThreadPoolExecutor(max_workers=5)
 
 # Function to download and cache attachments
-def download_and_cache(url, cache_db_path):
-    async def async_download():
+async def async_download(url):
+    try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     content = await response.read()
                     url_hash = hash_attachment(content)
 
-                    # Create a new SQLite connection for this thread
-                    cache_conn = sqlite3.connect(cache_db_path)
+                    cache_conn = sqlite3.connect(cache_db_path, check_same_thread=False)
                     cache_cursor = cache_conn.cursor()
 
-                    # Check if the attachment is already cached
                     cache_cursor.execute('SELECT file FROM cache WHERE attachment_hash = ?', (url_hash,))
                     result = cache_cursor.fetchone()
 
                     if result:
                         cache_conn.close()
-                        return result[0]  # Return the existing filename
+                        return result[0]
 
-                    # Remove URL parameters to get the proper extension
                     base_url = url.split('?')[0]
                     extension = base_url.split('.')[-1]
                     filename = generate_random_filename(extension)
                     filepath = os.path.join('.cache', filename)
-                    
+
                     with open(filepath, 'wb') as f:
                         f.write(content)
 
-                    # Store in cache_db.sqlite
                     cache_cursor.execute('''
                     INSERT INTO cache (url, attachment_hash, file)
                     VALUES (?, ?, ?)
@@ -180,15 +176,13 @@ def download_and_cache(url, cache_db_path):
                     cache_conn.close()
 
                     return filename
-        return None
+    except Exception as e:
+        print(f"Error downloading or caching file: {e}")
+    return None
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    return loop.run_until_complete(async_download())
-
-# Cache attachment with a separate thread
 async def cache_attachment(url):
-    return await asyncio.get_event_loop().run_in_executor(executor, download_and_cache, url, cache_db_path)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, lambda: asyncio.run(async_download(url)))
 
 # Helper functions
 def save_user(user, cursor, conn):
@@ -226,20 +220,16 @@ async def save_deleted_message(message):
 
 async def handle_edit(before, after):
     # Cache old attachments
-    old_attachments = []
-    if before.attachments:
-        old_attachments = [await cache_attachment(att.url) for att in before.attachments]
+    old_attachments_tasks = [cache_attachment(att.url) for att in before.attachments]
+    old_attachments = await asyncio.gather(*old_attachments_tasks)
 
     # Cache new attachments (only if they were removed in the edit)
-    removed_attachments = []
     old_attachment_urls = {att.url for att in before.attachments}
     new_attachment_urls = {att.url for att in after.attachments}
     removed_attachment_urls = old_attachment_urls - new_attachment_urls
     
-    for url in removed_attachment_urls:
-        filename = await cache_attachment(url)
-        if filename:
-            removed_attachments.append(filename)
+    removed_attachments_tasks = [cache_attachment(url) for url in removed_attachment_urls]
+    removed_attachments = await asyncio.gather(*removed_attachments_tasks)
 
     # Save the edit
     edited_cursor.execute('''
@@ -283,62 +273,65 @@ async def on_message(message):
 
 # Export both databases to CSV
 def export_to_csv():
-    # Export deleted_db.sqlite
-    with open('csv/deleted_db.csv', 'w', newline='') as csvfile:
-        fieldnames = ['entry_id', 'id', 'content', 'author_id', 'server_id', 'channel_id', 'timestamp', 'attachments']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        deleted_cursor.execute('SELECT * FROM deleted_messages')
-        for row in deleted_cursor.fetchall():
-            writer.writerow({
-                'entry_id': row[0],
-                'id': row[1],
-                'content': row[2],
-                'author_id': row[3],
-                'server_id': row[4],
-                'channel_id': row[5],
-                'timestamp': row[6],
-                'attachments': row[7],
-            })
+    try:
+        # Export deleted_db.sqlite
+        with open('csv/deleted_db.csv', 'w', newline='') as csvfile:
+            fieldnames = ['entry_id', 'id', 'content', 'author_id', 'server_id', 'channel_id', 'timestamp', 'attachments']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            deleted_cursor.execute('SELECT * FROM deleted_messages')
+            for row in deleted_cursor.fetchall():
+                writer.writerow({
+                    'entry_id': row[0],
+                    'id': row[1],
+                    'content': row[2],
+                    'author_id': row[3],
+                    'server_id': row[4],
+                    'channel_id': row[5],
+                    'timestamp': row[6],
+                    'attachments': row[7],
+                })
 
-    print("Exported to csv/deleted_db.csv")
+        print("Exported to csv/deleted_db.csv")
 
-    # Export edited_db.sqlite
-    with open('csv/edited_db.csv', 'w', newline='') as csvfile:
-        fieldnames = ['entry_id', 'id', 'old_content', 'new_content', 'edit_timestamp', 'author_id', 'server_id', 'channel_id', 'attachments', 'attachment_removed']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        edited_cursor.execute('SELECT * FROM edited_messages')
-        for row in edited_cursor.fetchall():
-            writer.writerow({
-                'entry_id': row[0],
-                'id': row[1],
-                'old_content': row[2],
-                'new_content': row[3],
-                'edit_timestamp': row[4],
-                'author_id': row[5],
-                'server_id': row[6],
-                'channel_id': row[7],
-                'attachments': row[8],
-                'attachment_removed': row[9],
-            })
+        # Export edited_db.sqlite
+        with open('csv/edited_db.csv', 'w', newline='') as csvfile:
+            fieldnames = ['entry_id', 'id', 'old_content', 'new_content', 'edit_timestamp', 'author_id', 'server_id', 'channel_id', 'attachments', 'attachment_removed']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            edited_cursor.execute('SELECT * FROM edited_messages')
+            for row in edited_cursor.fetchall():
+                writer.writerow({
+                    'entry_id': row[0],
+                    'id': row[1],
+                    'old_content': row[2],
+                    'new_content': row[3],
+                    'edit_timestamp': row[4],
+                    'author_id': row[5],
+                    'server_id': row[6],
+                    'channel_id': row[7],
+                    'attachments': row[8],
+                    'attachment_removed': row[9],
+                })
 
-    print("Exported to csv/edited_db.csv")
+        print("Exported to csv/edited_db.csv")
 
-    # Export cache_db.sqlite
-    with open('csv/cache_db.csv', 'w', newline='') as csvfile:
-        fieldnames = ['url', 'attachment_hash', 'file']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        cache_cursor.execute('SELECT * FROM cache')
-        for row in cache_cursor.fetchall():
-            writer.writerow({
-                'url': row[0],
-                'attachment_hash': row[1],
-                'file': row[2],
-            })
+        # Export cache_db.sqlite
+        with open('csv/cache_db.csv', 'w', newline='') as csvfile:
+            fieldnames = ['url', 'attachment_hash', 'file']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            cache_cursor.execute('SELECT * FROM cache')
+            for row in cache_cursor.fetchall():
+                writer.writerow({
+                    'url': row[0],
+                    'attachment_hash': row[1],
+                    'file': row[2],
+                })
 
-    print("Exported to csv/cache_db.csv")
+        print("Exported to csv/cache_db.csv")
+    except Exception as e:
+        print(f"Error exporting CSV files: {e}")
 
 # Run the bot
 token = open('token.txt').read().strip()
