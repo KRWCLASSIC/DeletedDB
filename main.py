@@ -13,10 +13,17 @@ intents.message_content = True
 intents.messages = True
 client = discord.Client(intents=intents)
 
+# Database folder path
+db_folder = 'db'
+
+# Ensure the db folder exists
+if not os.path.exists(db_folder):
+    os.makedirs(db_folder)
+
 # Database paths
-deleted_db_path = 'deleted_db.sqlite'
-edited_db_path = 'edited_db.sqlite'
-cache_db_path = 'cache_db.sqlite'
+deleted_db_path = os.path.join(db_folder, 'deleted_db.sqlite')
+edited_db_path = os.path.join(db_folder, 'edited_db.sqlite')
+cache_db_path = os.path.join(db_folder, 'cache_db.sqlite')
 
 # Create the deleted_db.sqlite database and tables
 def setup_deleted_db():
