@@ -7,6 +7,8 @@ import aiohttp
 import hashlib
 import csv
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -136,40 +138,57 @@ def generate_random_filename(extension):
 def hash_attachment(content):
     return hashlib.sha256(content).hexdigest()
 
-# Function to cache attachments
+# Initialize a ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=5)
+
+# Function to download and cache attachments
+def download_and_cache(url, cache_db_path):
+    async def async_download():
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    url_hash = hash_attachment(content)
+
+                    # Create a new SQLite connection for this thread
+                    cache_conn = sqlite3.connect(cache_db_path)
+                    cache_cursor = cache_conn.cursor()
+
+                    # Check if the attachment is already cached
+                    cache_cursor.execute('SELECT file FROM cache WHERE attachment_hash = ?', (url_hash,))
+                    result = cache_cursor.fetchone()
+
+                    if result:
+                        cache_conn.close()
+                        return result[0]  # Return the existing filename
+
+                    # Remove URL parameters to get the proper extension
+                    base_url = url.split('?')[0]
+                    extension = base_url.split('.')[-1]
+                    filename = generate_random_filename(extension)
+                    filepath = os.path.join('.cache', filename)
+                    
+                    with open(filepath, 'wb') as f:
+                        f.write(content)
+
+                    # Store in cache_db.sqlite
+                    cache_cursor.execute('''
+                    INSERT INTO cache (url, attachment_hash, file)
+                    VALUES (?, ?, ?)
+                    ''', (url, url_hash, filename))
+                    cache_conn.commit()
+                    cache_conn.close()
+
+                    return filename
+        return None
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(async_download())
+
+# Cache attachment with a separate thread
 async def cache_attachment(url):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                content = await response.read()
-                url_hash = hash_attachment(content)
-
-                # Check if the attachment is already cached
-                cache_cursor.execute('SELECT file FROM cache WHERE attachment_hash = ?', (url_hash,))
-                result = cache_cursor.fetchone()
-
-                if result:
-                    return result[0]  # Return the existing filename
-
-                # Remove URL parameters to get the proper extension
-                base_url = url.split('?')[0]
-                extension = base_url.split('.')[-1]
-                filename = generate_random_filename(extension)
-                filepath = os.path.join('.cache', filename)
-                
-                with open(filepath, 'wb') as f:
-                    f.write(content)
-
-                # Store in cache_db.sqlite
-                cache_cursor.execute('''
-                INSERT INTO cache (url, attachment_hash, file)
-                VALUES (?, ?, ?)
-                ''', (url, url_hash, filename))
-                cache_conn.commit()
-
-                return filename
-
-    return None
+    return await asyncio.get_event_loop().run_in_executor(executor, download_and_cache, url, cache_db_path)
 
 # Helper functions
 def save_user(user, cursor, conn):
@@ -268,7 +287,6 @@ def export_to_csv():
     with open('csv/deleted_db.csv', 'w', newline='') as csvfile:
         fieldnames = ['entry_id', 'id', 'content', 'author_id', 'server_id', 'channel_id', 'timestamp', 'attachments']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
         writer.writeheader()
         deleted_cursor.execute('SELECT * FROM deleted_messages')
         for row in deleted_cursor.fetchall():
@@ -289,7 +307,6 @@ def export_to_csv():
     with open('csv/edited_db.csv', 'w', newline='') as csvfile:
         fieldnames = ['entry_id', 'id', 'old_content', 'new_content', 'edit_timestamp', 'author_id', 'server_id', 'channel_id', 'attachments', 'attachment_removed']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
         writer.writeheader()
         edited_cursor.execute('SELECT * FROM edited_messages')
         for row in edited_cursor.fetchall():
@@ -312,7 +329,6 @@ def export_to_csv():
     with open('csv/cache_db.csv', 'w', newline='') as csvfile:
         fieldnames = ['url', 'attachment_hash', 'file']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
         writer.writeheader()
         cache_cursor.execute('SELECT * FROM cache')
         for row in cache_cursor.fetchall():
