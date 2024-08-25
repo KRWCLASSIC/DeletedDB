@@ -1,0 +1,4 @@
+*.sqlite
+csv/
+.cache/
+token.txt
