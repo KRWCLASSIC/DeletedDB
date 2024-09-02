@@ -118,10 +118,12 @@ def create_cache_table():
     CREATE TABLE IF NOT EXISTS cache (
         url TEXT,
         attachment_hash TEXT PRIMARY KEY,
-        file TEXT
+        file TEXT,
+        original_filename TEXT
     )''')
     cache_conn.commit()
     return cache_conn, cache_cursor
+
 
 cache_conn, cache_cursor = create_cache_table()
 
@@ -160,8 +162,11 @@ async def async_download(url):
                         cache_conn.close()
                         return result[0]
 
+                    # Extract the original filename
                     base_url = url.split('?')[0]
                     extension = base_url.split('.')[-1]
+                    original_filename = base_url.split('/')[-1]
+
                     filename = generate_random_filename(extension)
                     filepath = os.path.join('.cache', filename)
 
@@ -169,9 +174,9 @@ async def async_download(url):
                         f.write(content)
 
                     cache_cursor.execute('''
-                    INSERT INTO cache (url, attachment_hash, file)
-                    VALUES (?, ?, ?)
-                    ''', (url, url_hash, filename))
+                    INSERT INTO cache (url, attachment_hash, file, original_filename)
+                    VALUES (?, ?, ?, ?)
+                    ''', (url, url_hash, filename, original_filename))
                     cache_conn.commit()
                     cache_conn.close()
 
@@ -318,7 +323,7 @@ def export_to_csv():
 
         # Export cache_db.sqlite
         with open('csv/cache_db.csv', 'w', newline='') as csvfile:
-            fieldnames = ['url', 'attachment_hash', 'file']
+            fieldnames = ['url', 'attachment_hash', 'file', 'original_filename']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             cache_cursor.execute('SELECT * FROM cache')
@@ -327,6 +332,7 @@ def export_to_csv():
                     'url': row[0],
                     'attachment_hash': row[1],
                     'file': row[2],
+                    'original_filename': row[3],
                 })
 
         print("Exported to csv/cache_db.csv")
