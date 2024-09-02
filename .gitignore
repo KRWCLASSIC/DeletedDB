@@ -1,5 +1,5 @@
 *.sqlite
-csv/
+export/
 .cache/
 token.txt
 db/

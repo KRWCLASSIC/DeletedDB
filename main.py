@@ -1,6 +1,7 @@
 import discord
 import sqlite3
 import os
+import json
 import random
 import string
 import aiohttp
@@ -127,9 +128,9 @@ def create_cache_table():
 
 cache_conn, cache_cursor = create_cache_table()
 
-# Ensure the csv folder exists
-if not os.path.exists('csv'):
-    os.makedirs('csv')
+# Ensure the export folder exists
+if not os.path.exists('export'):
+    os.makedirs('export')
 
 # Helper function to generate a random filename
 def generate_random_filename(extension):
@@ -273,14 +274,15 @@ async def on_ready():
 @client.event
 async def on_message(message):
     if message.content.startswith('!csv'):
-        export_to_csv()
-        await message.channel.send("Databases have been exported to `csv/deleted_db.csv`, `csv/edited_db.csv`, and `csv/cache_db.csv`.")
+        export()
+        await message.channel.send("Databases, userdata and serverdata all have been exported into their respective `csv`!")
 
-# Export both databases to CSV
-def export_to_csv():
+# Export all data
+def export():
     try:
-        # Export deleted_db.sqlite
-        with open('csv/deleted_db.csv', 'w', newline='') as csvfile:
+
+        # Export deleted_db.sqlite to CSV
+        with open('export/deleted_db.csv', 'w', newline='') as csvfile:
             fieldnames = ['entry_id', 'id', 'content', 'author_id', 'server_id', 'channel_id', 'timestamp', 'attachments']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -297,10 +299,10 @@ def export_to_csv():
                     'attachments': row[7],
                 })
 
-        print("Exported to csv/deleted_db.csv")
+        print("Exported to export/deleted_db.csv")
 
-        # Export edited_db.sqlite
-        with open('csv/edited_db.csv', 'w', newline='') as csvfile:
+        # Export edited_db.sqlite to CSV
+        with open('export/edited_db.csv', 'w', newline='') as csvfile:
             fieldnames = ['entry_id', 'id', 'old_content', 'new_content', 'edit_timestamp', 'author_id', 'server_id', 'channel_id', 'attachments', 'attachment_removed']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -319,10 +321,10 @@ def export_to_csv():
                     'attachment_removed': row[9],
                 })
 
-        print("Exported to csv/edited_db.csv")
+        print("Exported to export/edited_db.csv")
 
-        # Export cache_db.sqlite
-        with open('csv/cache_db.csv', 'w', newline='') as csvfile:
+        # Export cache_db.sqlite to CSV
+        with open('export/cache_db.csv', 'w', newline='') as csvfile:
             fieldnames = ['url', 'attachment_hash', 'file', 'original_filename']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -335,9 +337,69 @@ def export_to_csv():
                     'original_filename': row[3],
                 })
 
-        print("Exported to csv/cache_db.csv")
+        print("Exported to export/cache_db.csv")
+
+        # Export users data from deleted_db.sqlite to CSV
+        with open('export/users.csv', 'w', newline='') as csvfile:
+            fieldnames = ['id', 'username', 'discriminator', 'profile_pic']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            deleted_cursor.execute('SELECT * FROM users')
+            for row in deleted_cursor.fetchall():
+                writer.writerow({
+                    'id': row[0],
+                    'username': row[1],
+                    'discriminator': row[2],
+                    'profile_pic': row[3],
+                })
+
+        print("Exported to export/users.csv")
+
+        # Export servers data from deleted_db.sqlite to CSV
+        with open('export/servers.csv', 'w', newline='') as csvfile:
+            fieldnames = ['id', 'name']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            deleted_cursor.execute('SELECT * FROM servers')
+            for row in deleted_cursor.fetchall():
+                writer.writerow({
+                    'id': row[0],
+                    'name': row[1],
+                })
+
+        print("Exported to export/servers.csv")
+
+        # Export all data to a single JSON file
+        all_data = {}
+
+        # Collect deleted messages data
+        deleted_cursor.execute('SELECT * FROM deleted_messages')
+        all_data['deleted_messages'] = [dict(zip([col[0] for col in deleted_cursor.description], row)) for row in deleted_cursor.fetchall()]
+
+        # Collect edited messages data
+        edited_cursor.execute('SELECT * FROM edited_messages')
+        all_data['edited_messages'] = [dict(zip([col[0] for col in edited_cursor.description], row)) for row in edited_cursor.fetchall()]
+
+        # Collect cache data
+        cache_cursor.execute('SELECT * FROM cache')
+        all_data['cache'] = [dict(zip([col[0] for col in cache_cursor.description], row)) for row in cache_cursor.fetchall()]
+
+        # Collect users data
+        deleted_cursor.execute('SELECT * FROM users')
+        all_data['users'] = [dict(zip([col[0] for col in deleted_cursor.description], row)) for row in deleted_cursor.fetchall()]
+
+        # Collect servers data
+        deleted_cursor.execute('SELECT * FROM servers')
+        all_data['servers'] = [dict(zip([col[0] for col in deleted_cursor.description], row)) for row in deleted_cursor.fetchall()]
+
+        # Save all data to a JSON file
+        with open('export/all_data.json', 'w') as jsonfile:
+            json.dump(all_data, jsonfile, indent=4)
+
+        print("Exported to export/all_data.json")
+
     except Exception as e:
-        print(f"Error exporting CSV files: {e}")
+        print(f"Error exporting files: {e}")
 
 # Run the bot
 token = open('token.txt').read().strip()
